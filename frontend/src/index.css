@@ -1,0 +1,7 @@
+/* Small browser-wide defaults. The main visual rules live in App.css. */
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+}
+/* These elements should be able to fill the browser viewport height. */
+html, body, #root { min-height: 100%; }

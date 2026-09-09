@@ -1,0 +1,70 @@
+import { useEffect, useState } from "react";
+import "../preprocess.css";
+import ExperimentHeader from "../components/ExperimentHeader";
+import ExperimentProgress from "../components/ExperimentProgress";
+
+const PLAN_KEY = "ml-lab-preprocess-plan";
+const TRAIN_KEY = "ml-lab-training-plan";
+const EMPTY_DATASET = { rows: 0, columns: [], filename: "" };
+const NAMES = { linear_regression: "Linear Regression", decision_tree_regressor: "Decision Tree Regressor", random_forest_regressor: "Random Forest Regressor", logistic_regression: "Logistic Regression", decision_tree_classifier: "Decision Tree Classifier", random_forest_classifier: "Random Forest Classifier" };
+
+export default function Evaluate() {
+  const [dataset, setDataset] = useState(EMPTY_DATASET);
+  const [plan, setPlan] = useState({ selectedTarget: "", selectedFeatures: [], trainingPercentage: 80 });
+  const [trainingPlan, setTrainingPlan] = useState({ problemType: "regression" });
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    try {
+      setPlan(JSON.parse(sessionStorage.getItem(PLAN_KEY) || "{}"));
+      setTrainingPlan(JSON.parse(sessionStorage.getItem(TRAIN_KEY) || "{}"));
+    } catch { setError("Your training choices could not be read. Please return to Step 04."); }
+    fetch("http://localhost:5000/api/dataset/preprocess")
+      .then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error); setDataset(payload); })
+      .catch((fetchError) => setError(fetchError.message || "Could not connect to the backend."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function runEvaluation() {
+    setRunning(true); setResult(null); setError("");
+    try {
+      const response = await fetch("http://localhost:5000/api/model/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: plan.selectedTarget, features: plan.selectedFeatures, training_percentage: plan.trainingPercentage, problem_type: trainingPlan.problemType, random_state: 42 }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Evaluation could not be completed.");
+      setResult(payload);
+    } catch (evaluationError) { setError(evaluationError.message || "Could not connect to the backend."); }
+    finally { setRunning(false); }
+  }
+
+  if (loading) return <EvaluateShell><StateMessage label="LOADING" text="Getting the evaluation lesson ready..." /></EvaluateShell>;
+  if (error && !dataset.columns.length) return <EvaluateShell><StateMessage label="ERROR" text={error} /></EvaluateShell>;
+  if (!plan.selectedTarget || !plan.selectedFeatures?.length) return <EvaluateShell><StateMessage label="STEP 03 FIRST" text="Choose a target and features before evaluating models." /><button className="continue-button" onClick={() => { window.location.hash = "#preprocess"; }}>Back to Preprocess -&gt;</button></EvaluateShell>;
+
+  const trainingRows = Math.round(dataset.rows * plan.trainingPercentage / 100);
+  const testRows = dataset.rows - trainingRows;
+  return <EvaluateShell>
+    <header className="preprocess-heading"><div><p className="section-label">STEP 06 / EVALUATE</p><h1>Evaluate<br /><em>your model.</em></h1></div><button className="explore-back" onClick={() => { window.location.hash = "#validate"; }}>Back to validate</button></header>
+    <p className="preprocess-intro">Evaluation is the final performance check. We compare predictions with real answers, compare several models fairly, and choose a useful model for this dataset.</p>
+    <LessonBlock title="What does evaluation mean?" explanation="A model is not automatically good because it can make predictions. We need to see how close those predictions are to the real answers. The most complicated model is not always the best; a simpler model may be easier to understand if it performs similarly."><ProgressiveLesson label="From guess to decision" example="The model studies the training rows, predicts the unseen test rows, and then we compare each guess with the actual value or class." why="A fair final check helps us choose a model based on evidence instead of appearance." detail="Evaluation uses the held-out test portion after model choices have been compared. This page does not use test answers to train a model." /></LessonBlock>
+    <LessonBlock title="Evaluation flow" explanation="Every candidate model uses the same dataset, features, split, preprocessing, and random seed so the comparison is fair."><div className="validation-flow evaluation-flow"><span>Trained models</span><b>-&gt;</b><span>Unseen data</span><b>-&gt;</b><span>Predictions</span><b>-&gt;</b><span>Compare</span><b>-&gt;</b><span>Select</span></div><div className="validation-plan"><SummaryValue label="Dataset" value={dataset.filename || "Uploaded dataset"} /><SummaryValue label="Target" value={plan.selectedTarget} /><SummaryValue label="Training rows" value={trainingRows} /><SummaryValue label="Test rows" value={testRows} /></div></LessonBlock>
+    <LessonBlock title="Compare suitable models" explanation={trainingPlan.problemType === "regression" ? "For a number target, we compare models using RMSE first. RMSE is prediction error in the target's units, and lower is better." : "For a category target, we compare models using F1 score first. F1 balances precision and recall, and higher is better."}><button className="continue-button" disabled={running} onClick={runEvaluation}>{running ? "Evaluating models..." : "Run Evaluation"} {!running && <span aria-hidden="true">-&gt;</span>}</button>{error && <div className="train-error">{error}</div>}{result && <EvaluationResult result={result} />}</LessonBlock>
+    {result && <><Interpretation result={result} /><Limitations /><FinalCard result={result} /></>}
+  </EvaluateShell>;
+}
+
+function EvaluateShell({ children }) { return <div className="experiment-page preprocess-page evaluate-page"><ExperimentHeader /><ExperimentProgress activeStep={5} /><main className="preprocess-main">{children}</main></div>; }
+function StateMessage({ label, text }) { return <div className="explore-state"><div className="state-badge">{label}</div><p>{text}</p></div>; }
+function LessonBlock({ title, explanation, children }) { return <section className="preprocess-section"><p className="section-label">LESSON</p><h2>{title}</h2><p className="preprocess-explanation">{explanation}</p>{children}</section>; }
+function ProgressiveLesson({ label, example, why, detail }) { return <div className="progressive-lesson"><div><span className="lesson-tag">BEGINNER IDEA</span><strong>{label}</strong></div><div className="teaching-card"><span>REAL DATA EXAMPLE</span><p>{example}</p></div><div className="teaching-card"><span>WHY IT MATTERS</span><p>{why}</p></div><details><summary>More technical detail</summary><p>{detail}</p></details></div>; }
+function SummaryValue({ label, value }) { return <div><span>{label}</span><strong>{value}</strong></div>; }
+function formatMetric(value) { return typeof value === "number" ? value.toFixed(3) : String(value); }
+function EvaluationResult({ result }) { const regression = result.problem_type === "regression"; const mainMetric = regression ? "rmse" : "f1"; return <div className="evaluation-result"><h3>Model comparison</h3><div className="evaluation-table"><div className="evaluation-row evaluation-head"><span>Model</span><span>Main metric</span><span>Other metrics</span><span>Time</span></div>{result.models.map((model) => <div className={`evaluation-row ${model.model_type === result.best_model ? "recommended" : ""}`} key={model.model_type}><strong>{NAMES[model.model_type]}</strong><span>{regression ? `RMSE ${formatMetric(model.rmse)}` : `F1 ${formatMetric(model.f1)}`}</span><span>{regression ? `MAE ${formatMetric(model.mae)} / R² ${formatMetric(model.r2)}` : `Accuracy ${formatMetric(model.accuracy)}`}</span><span>{model.training_time_ms} ms</span></div>)}</div><p className="preprocess-note">Recommended: <strong>{NAMES[result.best_model]}</strong>. “Best” here means the lowest RMSE for regression or highest F1 score for classification, with the related metric as support.</p><MetricChart result={result} regression={regression} />{regression && <PredictionVisual result={result} />}<PredictionTable result={result} regression={regression} mainMetric={mainMetric} /></div>; }
+function MetricChart({ result, regression }) { const metric = regression ? "rmse" : "f1"; const values = result.models.map((model) => model[metric]); const maximum = Math.max(...values, 0.0001); return <div className="metric-chart"><h3>{regression ? "RMSE comparison (shorter is better)" : "F1 comparison (taller is better)"}</h3>{result.models.map((model) => <div className="metric-bar-row" key={model.model_type}><span>{NAMES[model.model_type]}</span><div className="metric-bar-track"><div className={model.model_type === result.best_model ? "metric-bar best" : "metric-bar"} style={{ width: `${(model[metric] / maximum) * 100}%` }} /></div><strong>{formatMetric(model[metric])}</strong></div>)}</div>; }
+function PredictionVisual({ result }) { const values = result.prediction_preview.flatMap((row) => [Number(row.actual) || 0, Number(row.predicted) || 0]); const maximum = Math.max(...values, 1); return <div className="prediction-visual"><h3>Actual versus predicted sample</h3>{result.prediction_preview.slice(0, 8).map((row, index) => <div className="prediction-visual-row" key={`${row.actual}-${index}`}><span>#{index + 1}</span><div className="prediction-track"><i className="actual-mark" style={{ left: `${(Number(row.actual) / maximum) * 100}%` }} /><i className="predicted-mark" style={{ left: `${(Number(row.predicted) / maximum) * 100}%` }} /></div><strong>{formatMetric(row.absolute_error)}</strong></div>)}<p className="preprocess-note"><span className="actual-key" /> Actual <span className="predicted-key" /> Predicted. The final number is the absolute error for that row.</p></div>; }
+function PredictionTable({ result, regression }) { return <div className="validation-predictions"><h3>Best model prediction sample</h3><div className="prediction-table-head"><span>Actual</span><span>Predicted</span><span>{regression ? "Absolute error" : "Correct?"}</span></div>{result.prediction_preview.map((row, index) => <div className="prediction-table-row" key={`${row.actual}-${index}`}><span>{formatMetric(row.actual)}</span><span>{formatMetric(row.predicted)}</span><strong>{regression ? formatMetric(row.absolute_error) : row.correct ? "Yes" : "No"}</strong></div>)}</div>; }
+function Interpretation({ result }) { const best = result.best_metrics; const regression = result.problem_type === "regression"; const sentence = regression ? `The selected model is off by about ${formatMetric(best.mae)} target units on average. RMSE is ${formatMetric(best.rmse)}, so larger mistakes matter more in that number.` : `The selected model gets ${formatMetric(best.accuracy)} of test predictions correct, with an F1 score of ${formatMetric(best.f1)}.`; return <LessonBlock title="What do the results mean?" explanation={sentence}><ProgressiveLesson label="Read the result carefully" example={regression ? "For a price target, the error is measured in the same currency units as the target. Compare that error with typical prices in the dataset." : "For categories, inspect the confusion matrix and prediction sample to see which labels are being mixed up."} why="A metric is evidence about this dataset and split, not a promise that every future example will be correct." detail="Small datasets, outliers, weak features, a mismatched model, underfitting, and overfitting can all affect results. More data or better features may help, but the metrics alone cannot prove which cause is responsible." /></LessonBlock>; }
+function Limitations() { return <LessonBlock title="Limitations to remember" explanation="Metrics depend on the data and the way the experiment was set up."><div className="validation-look-list"><div><strong>A split is only one sample</strong><span>A random train/test split may not represent every real-world situation.</span></div><div><strong>Small datasets can be unstable</strong><span>A few examples can change the result noticeably.</span></div><div><strong>A score is not the whole story</strong><span>Correlation does not prove causation, and a good score does not guarantee real-world usefulness.</span></div><div><strong>Production needs more checks</strong><span>Test the model again before using it in a real system.</span></div></div></LessonBlock>; }
+function FinalCard({ result }) { return <section className="preprocess-section final-result"><p className="section-label">FINAL RESULT</p><h2>{NAMES[result.best_model]} is the recommended starting point.</h2><p className="preprocess-explanation">It was selected using {result.problem_type === "regression" ? "the lowest RMSE" : "the highest F1 score"} on the held-out test data. This is a useful comparison, not a guarantee of perfect predictions.</p><div className="validation-plan"><SummaryValue label="Main metric" value={result.problem_type === "regression" ? "RMSE" : "F1 score"} /><SummaryValue label="Value" value={formatMetric(result.best_metrics[result.problem_type === "regression" ? "rmse" : "f1"])} /><SummaryValue label="Test rows" value={result.test_rows} /><SummaryValue label="Target" value={result.target} /></div><div className="final-actions"><button className="continue-button" onClick={() => { window.location.hash = "#train"; }}>Return to Train</button><button className="explore-back" onClick={() => { window.location.hash = "#experiment"; }}>Return to Dataset</button><button className="explore-back" onClick={() => { window.location.hash = "#experiment"; sessionStorage.removeItem(PLAN_KEY); sessionStorage.removeItem(TRAIN_KEY); }}>Start Another Experiment</button></div></section>; }
