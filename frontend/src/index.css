@@ -1,7 +1,47 @@
-/* Small browser-wide defaults. The main visual rules live in App.css. */
+:root {
+  --font-main: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'DM Mono', monospace;
+
+  /* Fluid typography scale for sleek, clean readability */
+  --text-xs: 0.8rem;      /* ~13.5px */
+  --text-sm: 0.9rem;      /* ~15px */
+  --text-base: 1rem;       /* ~17px */
+  --text-md: 1.125rem;    /* ~19px */
+  --text-lg: 1.25rem;     /* ~21px */
+  --text-xl: 1.5rem;      /* ~25.5px */
+  --text-2xl: 2rem;       /* ~34px */
+}
+
+html {
+  font-size: 17px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  box-sizing: border-box;
+}
+
+*, *::before, *::after {
+  box-sizing: inherit;
+}
+
 body {
   margin: 0;
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-main);
+  font-size: var(--text-base);
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+  color: #e9eee4;
 }
-/* These elements should be able to fill the browser viewport height. */
-html, body, #root { min-height: 100%; }
+
+/* Ensure all buttons, inputs, and selects inherit sleek modern font */
+input, button, select, textarea {
+  font-family: inherit;
+}
+
+code, kbd, samp, pre {
+  font-family: var(--font-mono);
+}
+
+html, body, #root {
+  min-height: 100%;
+}

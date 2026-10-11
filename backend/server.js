@@ -44,8 +44,10 @@ const upload = multer({
 });
 
 // Stores the latest uploaded dataset for Step 02 and later steps.
-let latestUploadedDatasetPath = null;
-let latestUploadedDatasetName = null;
+// Defaults to car_sales_demo.csv so all ML features work immediately without manual upload.
+const defaultDemoCsvPath = path.join(__dirname, 'car_sales_demo.csv');
+let latestUploadedDatasetPath = fs.existsSync(defaultDemoCsvPath) ? defaultDemoCsvPath : null;
+let latestUploadedDatasetName = fs.existsSync(defaultDemoCsvPath) ? 'car_sales_demo.csv' : null;
 
 // --------------------------------------------------
 // Python detection
@@ -270,6 +272,20 @@ app.post(
 );
 
 // --------------------------------------------------
+// Reset to default demo dataset
+// --------------------------------------------------
+
+app.post('/api/dataset/reset-default', (req, res) => {
+  const defaultPath = path.join(__dirname, 'car_sales_demo.csv');
+  if (fs.existsSync(defaultPath)) {
+    latestUploadedDatasetPath = defaultPath;
+    latestUploadedDatasetName = 'car_sales_demo.csv';
+    return res.json({ success: true, filename: 'car_sales_demo.csv' });
+  }
+  return res.status(404).json({ error: 'Default demo dataset file not found.' });
+});
+
+// --------------------------------------------------
 // Step 02: Explore uploaded CSV
 // --------------------------------------------------
 
@@ -390,9 +406,8 @@ app.get('/api/dataset/preprocess', (req, res) => {
       const numericalColumns = Object.entries(analysis.dtypes || {})
         .filter(([, dtype]) => /int|float|number|bool/i.test(dtype))
         .map(([column]) => column);
-      const categoricalColumns = Object.entries(analysis.dtypes || {})
-        .filter(([, dtype]) => /object|string|category/i.test(dtype))
-        .map(([column]) => column);
+      const categoricalColumns = (analysis.column_names || [])
+        .filter((column) => !numericalColumns.includes(column));
 
       return res.json({
         columns: analysis.column_names || [],
