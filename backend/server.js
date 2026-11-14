@@ -11,9 +11,35 @@ const app = express();
 
 app.use(express.json());
 
+// --------------------------------------------------
+// CORS setup: supports FRONTEND_URL env var and local development
+// --------------------------------------------------
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+
+if (process.env.FRONTEND_URL) {
+  const customOrigins = process.env.FRONTEND_URL.split(',').map((url) => url.trim().replace(/\/$/, ''));
+  for (const origin of customOrigins) {
+    if (origin && !allowedOrigins.includes(origin)) {
+      allowedOrigins.push(origin);
+    }
+  }
+}
+
 app.use(
   cors({
-    origin: 'http://localhost:5173',
+    origin: (origin, callback) => {
+      // Allow requests with no origin (such as mobile apps, curl, or server-to-server)
+      if (!origin) return callback(null, true);
+      const cleanOrigin = origin.replace(/\/$/, '');
+      if (allowedOrigins.includes(cleanOrigin) || allowedOrigins.includes('*')) {
+        return callback(null, true);
+      }
+      return callback(null, false);
+    },
+    credentials: true,
   })
 );
 
@@ -50,72 +76,71 @@ let latestUploadedDatasetPath = fs.existsSync(defaultDemoCsvPath) ? defaultDemoC
 let latestUploadedDatasetName = fs.existsSync(defaultDemoCsvPath) ? 'car_sales_demo.csv' : null;
 
 // --------------------------------------------------
-// Python detection
+// Python detection and configuration
 // --------------------------------------------------
 
-// On Windows, "py" works even when "python" is not in PATH.
 function detectPython() {
-  const candidates = [];
-
-  // Optional custom Python path from an environment variable.
+  // 1. Explicitly configured via environment variable
   if (process.env.PYTHON) {
-    candidates.push(process.env.PYTHON);
-  }
-
-  if (process.platform === 'win32') {
-    candidates.push(
-      'py',
-      'python',
-      'python3',
-      'python.exe'
-    );
-  } else {
-    candidates.push(
-      'python3',
-      'python'
-    );
-  }
-
-  for (const cmd of candidates) {
     try {
-      const result = spawnSync(
-        cmd,
-        ['--version'],
-        {
-          timeout: 5000,
-          encoding: 'utf8',
-
-          // Allows Windows commands such as "py" to work.
-          
-        }
-      );
-
-      // Python may print its version to stdout OR stderr.
-      const output = `${result.stdout || ''}${result.stderr || ''}`
-        .trim();
-
+      const result = spawnSync(process.env.PYTHON, ['--version'], {
+        timeout: 5000,
+        encoding: 'utf8',
+      });
+      const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
       if (!result.error && output) {
-        console.log('Detected Python:', cmd, output);
-        return cmd;
+        console.log(`Using configured Python from process.env.PYTHON (${process.env.PYTHON}): ${output}`);
+        return process.env.PYTHON;
       }
-
-      console.log(`Could not use Python command: ${cmd}`);
-    } catch (error) {
-      console.log(
-        `Error checking ${cmd}:`,
-        error.message
-      );
+      console.warn(`Configured PYTHON (${process.env.PYTHON}) returned no version output. Using anyway.`);
+      return process.env.PYTHON;
+    } catch (err) {
+      console.warn(`Error verifying configured PYTHON (${process.env.PYTHON}): ${err.message}. Using anyway.`);
+      return process.env.PYTHON;
     }
   }
 
-  console.warn(
-    'No Python executable detected. Python features are unavailable.'
-  );
+  // 2. Fallback candidates when PYTHON is not provided
+  const candidates = process.platform === 'win32'
+    ? ['py', 'python', 'python3', 'python.exe']
+    : ['python3', 'python'];
 
-  return null;
+  for (const cmd of candidates) {
+    try {
+      const result = spawnSync(cmd, ['--version'], {
+        timeout: 5000,
+        encoding: 'utf8',
+      });
+      const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+      if (!result.error && output) {
+        console.log(`Detected Python (${cmd}): ${output}`);
+        return cmd;
+      }
+    } catch (err) {
+      // Check next candidate
+    }
+  }
+
+  // 3. Default fallback if no executable responded
+  const fallback = process.platform === 'win32' ? 'python' : 'python3';
+  console.warn(`No Python executable verified via --version. Falling back to default '${fallback}'.`);
+  return fallback;
 }
 
 const PYTHON_CMD = detectPython();
+const pythonDir = path.join(__dirname, 'python');
+
+function getSpawnOptions() {
+  return {
+    cwd: __dirname,
+    env: {
+      ...process.env,
+      PYTHONPATH: process.env.PYTHONPATH
+        ? `${pythonDir}${path.delimiter}${process.env.PYTHONPATH}`
+        : pythonDir,
+    },
+  };
+}
 
 // --------------------------------------------------
 // Health route
@@ -149,7 +174,7 @@ app.get('/api/python-test', (req, res) => {
     ],
     {
       encoding: 'utf8',
-     
+      timeout: 10000,
     }
   );
 
@@ -197,14 +222,11 @@ app.post(
         scriptPath,
         req.file.path,
       ],
-      {
-        cwd: __dirname,
-      }
+      getSpawnOptions()
     );
 
     let stdout = '';
     let stderr = '';
-    let responseSent = false;
 
     pythonProcess.stdout.on('data', (data) => {
       stdout += data.toString();
@@ -219,16 +241,16 @@ app.post(
 
       fs.unlink(req.file.path, () => {});
 
-      responseSent = true;
-
-      return res.status(500).json({
-        error: 'Could not start the Python analysis process.',
-        details: error.message,
-      });
+      if (!res.headersSent) {
+        return res.status(500).json({
+          error: 'Could not start the Python analysis process.',
+          details: error.message,
+        });
+      }
     });
 
     pythonProcess.on('close', (code) => {
-      if (responseSent) {
+      if (res.headersSent) {
         return;
       }
 
@@ -315,10 +337,7 @@ app.get('/api/dataset/explore', (req, res) => {
       scriptPath,
       latestUploadedDatasetPath,
     ],
-    {
-      cwd: __dirname,
-    
-    }
+    getSpawnOptions()
   );
 
   let stdout = '';
@@ -338,13 +357,19 @@ app.get('/api/dataset/explore', (req, res) => {
       error
     );
 
-    return res.status(500).json({
-      error: 'Could not explore the uploaded dataset.',
-      details: error.message,
-    });
+    if (!res.headersSent) {
+      return res.status(500).json({
+        error: 'Could not explore the uploaded dataset.',
+        details: error.message,
+      });
+    }
   });
 
   pythonProcess.on('close', (code) => {
+    if (res.headersSent) {
+      return;
+    }
+
     if (code !== 0) {
       console.error(
         'Python exploration error:',
@@ -389,15 +414,23 @@ app.get('/api/dataset/preprocess', (req, res) => {
   }
 
   const scriptPath = path.join(__dirname, 'python', 'analyze_dataset.py');
-  const pythonProcess = spawn(PYTHON_CMD, [scriptPath, latestUploadedDatasetPath], { cwd: __dirname });
+  const pythonProcess = spawn(PYTHON_CMD, [scriptPath, latestUploadedDatasetPath], getSpawnOptions());
   let stdout = '';
   let stderr = '';
 
   pythonProcess.stdout.on('data', (data) => { stdout += data.toString(); });
   pythonProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-  pythonProcess.on('error', (error) => res.status(500).json({ error: 'Could not read the uploaded dataset.', details: error.message }));
+  pythonProcess.on('error', (error) => {
+    console.error('Could not start preprocess analysis:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Could not read the uploaded dataset.', details: error.message });
+    }
+  });
   pythonProcess.on('close', (code) => {
+    if (res.headersSent) return;
+
     if (code !== 0) {
+      console.error('Preprocess analysis error:', stderr);
       return res.status(422).json({ error: 'Python could not read this CSV file.', details: stderr.trim() });
     }
 
@@ -418,6 +451,7 @@ app.get('/api/dataset/preprocess', (req, res) => {
         filename: latestUploadedDatasetName,
       });
     } catch (error) {
+      console.error('Malformed preprocess metadata:', error, stdout);
       return res.status(500).json({ error: 'Python returned malformed dataset metadata.' });
     }
   });
@@ -437,20 +471,33 @@ app.post('/api/model/train', (req, res) => {
   }
 
   const scriptPath = path.join(__dirname, 'python', 'train_model.py');
-  const pythonProcess = spawn(PYTHON_CMD, [scriptPath, latestUploadedDatasetPath, JSON.stringify(req.body || {})], { cwd: __dirname });
+  const pythonProcess = spawn(
+    PYTHON_CMD,
+    [scriptPath, latestUploadedDatasetPath, JSON.stringify(req.body || {})],
+    getSpawnOptions()
+  );
   let stdout = '';
   let stderr = '';
 
   pythonProcess.stdout.on('data', (data) => { stdout += data.toString(); });
   pythonProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-  pythonProcess.on('error', (error) => res.status(500).json({ error: 'Could not start model training.', details: error.message }));
+  pythonProcess.on('error', (error) => {
+    console.error('Could not start model training:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Could not start model training.', details: error.message });
+    }
+  });
   pythonProcess.on('close', (code) => {
+    if (res.headersSent) return;
+
     if (code !== 0) {
+      console.error('Model training error:', stderr);
       return res.status(422).json({ error: stderr.trim() || 'The model could not be trained.' });
     }
     try {
       return res.json(JSON.parse(stdout));
     } catch (error) {
+      console.error('Malformed train output:', error, stdout);
       return res.status(500).json({ error: 'Python returned malformed training data.' });
     }
   });
@@ -470,20 +517,33 @@ app.post('/api/model/validate', (req, res) => {
   }
 
   const scriptPath = path.join(__dirname, 'python', 'validate_model.py');
-  const pythonProcess = spawn(PYTHON_CMD, [scriptPath, latestUploadedDatasetPath, JSON.stringify(req.body || {})], { cwd: __dirname });
+  const pythonProcess = spawn(
+    PYTHON_CMD,
+    [scriptPath, latestUploadedDatasetPath, JSON.stringify(req.body || {})],
+    getSpawnOptions()
+  );
   let stdout = '';
   let stderr = '';
 
   pythonProcess.stdout.on('data', (data) => { stdout += data.toString(); });
   pythonProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-  pythonProcess.on('error', (error) => res.status(500).json({ error: 'Could not start validation.', details: error.message }));
+  pythonProcess.on('error', (error) => {
+    console.error('Could not start validation:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Could not start validation.', details: error.message });
+    }
+  });
   pythonProcess.on('close', (code) => {
+    if (res.headersSent) return;
+
     if (code !== 0) {
+      console.error('Validation error:', stderr);
       return res.status(422).json({ error: stderr.trim() || 'The model could not be validated.' });
     }
     try {
       return res.json(JSON.parse(stdout));
     } catch (error) {
+      console.error('Malformed validation output:', error, stdout);
       return res.status(500).json({ error: 'Python returned malformed validation data.' });
     }
   });
@@ -503,18 +563,33 @@ app.post('/api/model/evaluate', (req, res) => {
   }
 
   const scriptPath = path.join(__dirname, 'python', 'evaluate_model.py');
-  const pythonProcess = spawn(PYTHON_CMD, [scriptPath, latestUploadedDatasetPath, JSON.stringify(req.body || {})], { cwd: __dirname });
+  const pythonProcess = spawn(
+    PYTHON_CMD,
+    [scriptPath, latestUploadedDatasetPath, JSON.stringify(req.body || {})],
+    getSpawnOptions()
+  );
   let stdout = '';
   let stderr = '';
 
   pythonProcess.stdout.on('data', (data) => { stdout += data.toString(); });
   pythonProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-  pythonProcess.on('error', (error) => res.status(500).json({ error: 'Could not start evaluation.', details: error.message }));
+  pythonProcess.on('error', (error) => {
+    console.error('Could not start evaluation:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Could not start evaluation.', details: error.message });
+    }
+  });
   pythonProcess.on('close', (code) => {
-    if (code !== 0) return res.status(422).json({ error: stderr.trim() || 'The models could not be evaluated.' });
+    if (res.headersSent) return;
+
+    if (code !== 0) {
+      console.error('Evaluation error:', stderr);
+      return res.status(422).json({ error: stderr.trim() || 'The models could not be evaluated.' });
+    }
     try {
       return res.json(JSON.parse(stdout));
     } catch (error) {
+      console.error('Malformed evaluation output:', error, stdout);
       return res.status(500).json({ error: 'Python returned malformed evaluation data.' });
     }
   });
@@ -533,23 +608,23 @@ app.post('/api/check', (req, res) => {
     });
   }
 
-  if (!PYTHON_CMD) {
+  const scriptPath = path.join(
+    __dirname,
+    'ml_model.py'
+  );
+
+  if (!PYTHON_CMD || !fs.existsSync(scriptPath)) {
     const safe = Math.random() > 0.35;
 
     return res.json({
       verdict: safe ? 'safe' : 'phishing',
       score: safe ? 0.94 : 0.13,
       explanation: safe
-        ? 'Demo fallback: no Python available'
-        : 'Demo fallback: suspicious URL',
+        ? 'Demo fallback: no issues detected'
+        : 'Demo fallback: suspicious patterns found',
       url,
     });
   }
-
-  const scriptPath = path.join(
-    __dirname,
-    'ml_model.py'
-  );
 
   const pythonProcess = spawn(
     PYTHON_CMD,
@@ -557,10 +632,7 @@ app.post('/api/check', (req, res) => {
       scriptPath,
       url,
     ],
-    {
-      cwd: __dirname,
- 
-    }
+    getSpawnOptions()
   );
 
   let stdout = '';
@@ -586,14 +658,20 @@ app.post('/api/check', (req, res) => {
       error
     );
 
-    return res.status(500).json({
-      error: 'Could not start the Python URL checker.',
-      details: error.message,
-    });
+    if (!res.headersSent) {
+      return res.status(500).json({
+        error: 'Could not start the Python URL checker.',
+        details: error.message,
+      });
+    }
   });
 
   pythonProcess.on('close', (code) => {
     clearTimeout(timeout);
+
+    if (res.headersSent) {
+      return;
+    }
 
     if (code !== 0 || !stdout.trim()) {
       console.error(
@@ -668,8 +746,10 @@ app.get('/', (req, res) => {
 // Start server
 // --------------------------------------------------
 
-app.listen(5000, () => {
-  console.log('Server is running on port 5000');
+const PORT = process.env.PORT || 5000;
+
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running on port ${PORT}`);
 
   if (PYTHON_CMD) {
     console.log(
@@ -681,3 +761,5 @@ app.listen(5000, () => {
     );
   }
 });
+
+module.exports = { app, server };

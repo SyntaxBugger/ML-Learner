@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Uploads & scratch files
+uploads/*
+!uploads/.gitkeep
+temp_test.csv
+
